@@ -165,3 +165,22 @@ public class CdmoScheduling {
         }
     }
 }
+
+
+3. 代码核心逻辑说明
+变量建模 (IntervalVar)：
+在排产问题中，IntervalVar 是 OR-Tools 的灵魂。它自动关联了 start (开始时间), duration (持续时间) 和 end (结束时间)。
+由于 CDMO 中一个任务可能有多个可选的釜，我们使用了 OptionalIntervalVar。只有当该任务被分配到特定釜时，这个间隔才生效。
+约束条件 (Constraints)：
+addExactlyOne: 确保一个工序只在选定的某一个反应釜中生产。
+addGreaterOrEqual: 保证工艺流程的先后顺序（如：反应不结束，不能开始压滤）。
+addNoOverlap: 核心资源约束。确保同一个反应釜在时间线上，任务之间没有重叠。
+目标函数 (Objective)：
+minimize(makespan): 最小化所有任务中最后的结束时间，从而提高工厂整体产出效率。
+4. CDMO 实际场景中可扩展的方向
+如果需要更贴近实际业务，你可以在此基础上增加：
+清洗时间 (Changeover Time)：如果任务 A 和任务 B 切换时涉及不同物料，需要在两个 IntervalVar 之间插入一个取决于产品类型的 Gap。
+釜容量限制：如果订单量是 1000L，而釜只有 500L，需要拆分 Job 或增加容量匹配逻辑。
+能源/人工限制：可以使用 model.addCumulative 来限制同一时间开启的反应釜总数（例如受限于公用工程蒸汽量）。
+截止日期 (Deadline)：通过 model.addLessOrEqual(tv.end, deadline) 增加交期硬约束。
+这个 Java 程序可以直接运行，只需配置好 OR-Tools 的环境即可。它为 CDMO 的复杂排产提供了一个高度可扩展的底层框架。
