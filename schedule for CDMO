@@ -169,3 +169,27 @@ public class CdmoProScheduling {
         }
     }
 }
+
+
+关键业务逻辑解析
+1. 工艺硬约束（Hard Constraints）
+程序中通过 boolean match = ... 这一段代码实现了 CDMO 的工艺预审。
+温度与压力：必须 vessel >= task。
+pH 范围：制药中搪玻璃（GL）怕强碱（会导致瓷层脱落），不锈钢（SS）怕强酸（会腐蚀），因此使用 minPH 和 maxPH 双重判断。
+OEB 等级：这是制药行业特有的，涉及高毒、高活性物质（如细胞毒类药物）。只有高密闭车间的反应釜（OEB4/5）才能承接高要求的任务。
+2. 避免排产冲突（Existing Reservations）
+处理老批次：在排新任务前，我们先将 ExistingReservation 转化成 model.newFixedIntervalVar。
+这些 FixedInterval 会被加入到对应反应釜的 addNoOverlap 约束中。
+效果：求解器在给新任务找 taskStarts 时，会自动跳过这些已经被占用的时间段。
+3. 材质匹配策略
+reqMaterial 设置为 ANY 时，表示对材质无特殊要求（只要温压达标）。
+在实际 CDMO 中，如果涉及催化加氢，通常必须指定某种合金釜，程序中通过字符串比对轻松实现。
+这种架构如何应对“来一个批次，排一个批次”？
+这在排产中称为 增量排产（Incremental Scheduling）。
+加载现状：从数据库读取所有反应釜的未来 30 天已占用计划。
+录入新任务：输入新订单的工艺需求（pH, Temp, etc.）。
+运行求解器：求解器会像玩“俄罗斯方块”一样，寻找现有缝隙中最早、最合适的釜进行填充。
+结果反馈：如果返回 INFEASIBLE，说明现有产能无法满足工艺要求或交期，需要协调外协或调整维护计划。
+建议扩展
+清洗时间（Setup Time）：如果两个批次品种不同，在 NoOverlap 之前，可以根据前一个任务的品种计算 Transition Time。
+多釜并联：如果一个工序需要两个釜（一个反应，一个接收），可以在模型中增加两个 IntervalVar 并强制它们同步开始。
