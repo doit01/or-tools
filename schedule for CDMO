@@ -1,0 +1,171 @@
+import com.google.ortools.Loader;
+import com.google.ortools.sat.*;
+import java.util.*;
+
+public class CdmoProScheduling {
+
+    // --- 数据模型 ---
+    
+    // 反应釜属性
+    static class Vessel {
+        int id;
+        String name;
+        double maxTemp;      // 最高温度 (℃)
+        double maxPressure;  // 最大压力 (MPa)
+        double minPH;        // 最小耐受pH (酸)
+        double maxPH;        // 最大耐受pH (碱)
+        String material;     // 材质: GL(搪玻璃), SS(不锈钢), HC(哈氏合金)
+        int oebLevel;        // 职业暴露等级 (1-5), 5最高
+        
+        Vessel(int id, String name, double t, double p, double minPH, double maxPH, String mat, int oeb) {
+            this.id = id; this.name = name; this.maxTemp = t; this.maxPressure = p;
+            this.minPH = minPH; this.maxPH = maxPH; this.material = mat; this.oebLevel = oeb;
+        }
+    }
+
+    // 生产任务要求
+    static class Task {
+        int jobId;
+        int taskId;
+        int duration;
+        double reqTemp;
+        double reqPressure;
+        double reqPH;
+        String reqMaterial; // 可选: "ANY", "GL", "SS"
+        int reqOEB;
+
+        Task(int j, int t, int d, double temp, double pres, double ph, String mat, int oeb) {
+            this.jobId = j; this.taskId = t; this.duration = d;
+            this.reqTemp = temp; this.reqPressure = pres; this.reqPH = ph;
+            this.reqMaterial = mat; this.reqOEB = oeb;
+        }
+    }
+
+    // 已占用的时间段 (表示已经排好的老批次)
+    static class ExistingReservation {
+        int vesselId;
+        int start;
+        int end;
+        ExistingReservation(int v, int s, int e) { this.vesselId = v; this.start = s; this.end = e; }
+    }
+
+    public static void main(String[] args) {
+        Loader.loadNativeLibraries();
+
+        // 1. 初始化 Mock 数据
+        // -------------------------------------------------------
+        // R1: 搪玻璃(GL)，耐酸不耐碱，高压，OEB4
+        // R2: 不锈钢(SS)，耐碱不耐酸，常压，OEB2
+        // R3: 哈氏合金(HC)，全能，高温高压，OEB5
+        List<Vessel> vessels = Arrays.asList(
+            new Vessel(0, "R01_搪玻璃釜", 150, 0.6, 0.0, 10.0, "GL", 4),
+            new Vessel(1, "R02_不锈钢釜", 200, 0.1, 6.0, 14.0, "SS", 2),
+            new Vessel(2, "R03_合金高压釜", 300, 2.5, 0.0, 14.0, "HC", 5)
+        );
+
+        // 新增一个订单 Job 101，包含两个工序
+        List<Task> newJob = Arrays.asList(
+            // 工序1: 强酸(pH 1.0), 压力0.4, OEB3 -> 只能选 R01 或 R03
+            new Task(101, 0, 8, 80, 0.4, 1.0, "GL", 3),
+            // 工序2: 高温(250度) -> 只能选 R03
+            new Task(101, 1, 6, 250, 0.1, 7.0, "ANY", 2)
+        );
+
+        // 已有的排产计划 (Conflict): 假设 R03 在时间 [0, 10] 已经被占用
+        List<ExistingReservation> reserved = Arrays.asList(
+            new ExistingReservation(2, 0, 12) 
+        );
+
+        // 2. 建模
+        CpModel model = new CpModel();
+        int horizon = 100; // 最大时间跨度
+
+        // 用于存储每个任务在每个釜上的 interval
+        List<IntervalVar>[] vesselIntervals = new List[vessels.size()];
+        for (int i = 0; i < vessels.size(); i++) vesselIntervals[i] = new ArrayList<>();
+
+        // 处理已有批次的占用 (Fixed Intervals)
+        for (ExistingReservation res : reserved) {
+            vesselIntervals[res.vesselId].add(model.newFixedIntervalVar(res.start, res.end - res.start, "reserved"));
+        }
+
+        // 处理新任务
+        IntVar makespan = model.newIntVar(0, horizon, "makespan");
+        IntVar[] taskStarts = new IntVar[newJob.size()];
+        IntVar[] taskEnds = new IntVar[newJob.size()];
+
+        for (int t = 0; t < newJob.size(); t++) {
+            Task task = newJob.get(t);
+            taskStarts[t] = model.newIntVar(0, horizon, "j" + task.jobId + "t" + t + "_start");
+            taskEnds[t] = model.newIntVar(0, horizon, "j" + task.jobId + "t" + t + "_end");
+
+            List<Literal> presences = new ArrayList<>();
+            
+            for (Vessel v : vessels) {
+                // --- 核心逻辑：属性匹配过滤 ---
+                boolean match = v.maxTemp >= task.reqTemp &&
+                                v.maxPressure >= task.reqPressure &&
+                                v.minPH <= task.reqPH && v.maxPH >= task.reqPH &&
+                                (task.reqMaterial.equals("ANY") || v.material.equals(task.reqMaterial)) &&
+                                v.oebLevel >= task.reqOEB;
+
+                if (match) {
+                    Literal p = model.newBoolVar("j" + task.jobId + "t" + t + "_v" + v.id);
+                    OptionalIntervalVar interval = model.newOptionalIntervalVar(
+                        taskStarts[t], model.newConstant(task.duration), taskEnds[t], p, "interval_v" + v.id
+                    );
+                    vesselIntervals[v.id].add(interval);
+                    presences.add(p);
+                }
+            }
+
+            if (presences.isEmpty()) {
+                System.err.println("错误：没有反应釜满足任务 " + t + " 的工艺要求！");
+                return;
+            }
+            model.addExactlyOne(presences.toArray(new Literal[0]));
+        }
+
+        // 3. 约束
+        // 工艺先后顺序 (Task 0 -> Task 1)
+        for (int i = 0; i < newJob.size() - 1; i++) {
+            model.addGreaterOrEqual(taskStarts[i+1], taskEnds[i]);
+        }
+
+        // 反应釜互斥 (No Overlap)
+        for (int v = 0; v < vessels.size(); v++) {
+            model.addNoOverlap(vesselIntervals[v]);
+        }
+
+        // 目标：最小化完工时间
+        model.addLessOrEqual(taskEnds[newJob.size()-1], makespan);
+        model.minimize(makespan);
+
+        // 4. 求解
+        CpSolver solver = new CpSolver();
+        CpSolverStatus status = solver.solve(model);
+
+        // 5. 结果显示
+        if (status == CpSolverStatus.OPTIMAL || status == CpSolverStatus.FEASIBLE) {
+            System.out.println("成功为新批次排产！");
+            for (int t = 0; t < newJob.size(); t++) {
+                long start = solver.value(taskStarts[t]);
+                long end = solver.value(taskEnds[t]);
+                String selectedVessel = "";
+                for (Vessel v : vessels) {
+                    // 检查哪个釜的布尔变量为 true
+                    try {
+                        if (solver.booleanValue(model.getBoolVarVarProtoIndex(
+                            model.newBoolVar("j101t" + t + "_v" + v.id).getIndex() // 这里仅演示逻辑
+                        ))) { } 
+                    } catch (Exception e) {}
+                    // 实际开发中建议用 Map 存储变量引用
+                }
+                System.out.printf("工序 %d: 开始于 %d, 结束于 %d (持续 %d 小时)\n", 
+                                   t, start, end, (end-start));
+            }
+        } else {
+            System.out.println("在当前约束下无法完成排产。可能是设备能力不足或时间窗口冲突。");
+        }
+    }
+}
