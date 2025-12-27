@@ -1,0 +1,396 @@
+Planning List Variable 是 Timefold 近两年推出的“杀手锏”级特性。它彻底改变了处理**“顺序”和“分配”**问题的建模方式。
+
+在传统的建模中，我们要搞定“哪个反应釜做哪个药，且按什么顺序做”非常痛苦。而 List Variable 让这一切变得极其直观。
+
+1. 核心定义：什么是 List Variable？
+
+想象你是一个工厂调度员，你面前有 3 个反应釜（Reactor），手里有 10 个生产任务（Batch）。
+
+传统做法：你需要给每个任务标上“我是哪个釜”和“我是第几个”。
+
+List Variable 做法：每个反应釜直接拥有一个 List<Batch>。
+
+你只需要把任务像“塞卡片”一样塞进某个反应釜的 List 里。List 中元素的索引（Index）就代表了生产的先后顺序。
+
+2. 为什么它对 CDMO 特别重要？（对比 VRP 和任务分配）
+
+在 CDMO 场景中，反应釜排程本质上是一个 多设备任务分配与排序问题，这与 VRP（车辆路径规划）高度相似：
+
+VRP（车辆路径）：一台车（反应釜）跑多个点（任务），顺序决定了路程（清洗切换耗时）。
+
+Task Assigning（任务分配）：一个工人（反应釜）处理一串工单（任务），顺序决定了完工时间。
+
+List Variable 的威力在于：它同时解决了“分给谁”和“按什么顺序”这两个问题。
+
+3. 代码如何实现？（CDMO 例子）
+第一步：定义 Planning Value（被排的对象）
+
+这是被放进 List 里的元素。
+
+code
+Java
+download
+content_copy
+expand_less
+public class BatchJob {
+    private String id;
+    private int durationMinutes; // 反应时长
+    // 注意：这里不需要加 @PlanningVariable
+}
+第二步：定义 Planning Entity（持有 List 的容器）
+
+这是“反应釜”，它是排程的主体。
+
+code
+Java
+download
+content_copy
+expand_less
+@PlanningEntity
+public class Reactor {
+    private String name;
+
+    // 核心：定义 List 变量
+    @PlanningListVariable(valueRangeProviderRefs = "batchRange")
+    private List<BatchJob> batchList = new ArrayList<>();
+    
+    // ...
+}
+第三步：定义 Planning Solution（全局容器）
+code
+Java
+download
+content_copy
+expand_less
+@PlanningSolution
+public class ProductionSchedule {
+    @ValueRangeProvider(id = "batchRange")
+    @PlanningEntityCollectionProperty
+    private List<BatchJob> allBatches; // 所有待排的任务
+
+    @PlanningEntityCollectionProperty
+    private List<Reactor> allReactors; // 所有反应釜
+    
+    // ...
+}
+4. 它是如何运作的？（Solver 的动作）
+
+当 Solver 运行时，它会执行以下三种极其高效的操作：
+
+Move：把一个 BatchJob 从反应釜 A 的 List 移到反应釜 B。
+
+Swap：交换反应釜 A 里的两个任务，或者交换 A 和 B 之间的任务。
+
+Shuffle：在同一个反应釜的 List 内部重新排序。
+
+5. 杀手锏功能：影子变量（Shadow Variables）
+
+在 CDMO 中，最重要的计算是：“Batch B 什么时候开始？”
+答案是：Batch A 的结束时间 + 反应釜切换/清洗耗时。
+
+List Variable 配合 @InverseRelationShadowVariable 和 @NextElementShadowVariable，可以让你在代码里写出极其优雅的逻辑：
+
+code
+Java
+download
+content_copy
+expand_less
+public class BatchJob {
+    // 影子变量：自动知道自己属于哪个反应釜
+    @InverseRelationShadowVariable(sourceVariableName = "batchList")
+    private Reactor reactor;
+
+    // 影子变量：自动知道自己前一个任务是谁
+    @PreviousElementShadowVariable(sourceVariableName = "batchList")
+    private BatchJob previousBatch;
+
+    // 这样你就能轻松计算：
+    public LocalDateTime getStartTime() {
+        if (previousBatch == null) {
+            return reactor.getReadyTime(); // 反应釜空闲时间
+        }
+        return previousBatch.getEndTime().plusMinutes(calculateCleaningTime(previousBatch, this));
+    }
+}
+6. List Variable 的优势（为什么你应该用它？）
+
+直观性：它完美对应了现实世界——反应釜的任务清单。
+
+性能极高：Timefold 针对 List 结构的移动（Move）做了深度优化，比起传统的“链式建模（Chained Variable）”，它的计算速度更快，且不容易产生“无效解”。
+
+处理“空闲”非常容易：如果一个任务没被放进任何 Reactor 的 List，它就自动处于“未分配”状态。
+
+约束编写简单：你可以直接用 Java Stream 处理 List。比如：reactor.getBatchList().size() > 5（任务太多）。
+
+7. 总结：何时该用 List Variable？
+
+如果你的 CDMO 系统满足以下两个条件，请务必使用 List Variable：
+
+资源是有限的（反应釜、离心机、工人）。
+
+顺序很重要（先做药 A 再做药 B，和先做 B 再做 A 的清洗成本不一样）。
+
+这目前是 Timefold 处理此类问题的官方推荐方式。它避开了传统运筹优化中复杂的索引计算，让你用写业务逻辑的方式搞定复杂的排产。
+
+在 Timefold 的建模世界里，Planning Value（规划值） 和 Planning Value Range（值范围） 决定了 Solver（求解器）“能把什么东西填进空格里”。
+
+如果说 Planning Variable 是填空题的“空格”，那么 Planning Value 就是“备选项”，而 Value Range 就是“备选答案的池子”。
+
+以下是针对 CDMO 场景的详细解析：
+
+1. Planning Value (规划值)
+
+定义：它是 Solver 尝试分配给 @PlanningVariable 的具体对象或数值。
+
+在 CDMO 中是什么？
+
+如果你在排设备，Value 就是具体的 Reactor（反应釜） 实例。
+
+如果你在排时间，Value 就是具体的 LocalDateTime 或者一个 时间片序号。
+
+特点：
+
+它们通常是 Problem Facts（问题事实）。
+
+Solver 不会改变这些对象本身的属性，它只是建立变量与值之间的“引用关系”。
+
+2. Planning Value Range (规划值范围)
+
+定义：这是告诉 Solver：“对于这个变量，你只能从这组备选答案中挑选。”
+
+你必须在代码中使用 @ValueRangeProvider 注解来定义这个池子。
+
+A. 集合型范围 (Collection Value Range) —— 最常用
+
+这是最直接的方式：直接给出一张列表。
+
+CDMO 场景：给生产任务分配反应釜。
+
+实现：
+
+code
+Java
+download
+content_copy
+expand_less
+@PlanningSolution
+public class ProductionSchedule {
+    
+    // 定义答案池，起个名字叫 "reactorRange"
+    @ValueRangeProvider(id = "reactorRange")
+    public List<Reactor> getReactorList() {
+        return reactorList;
+    }
+
+    @PlanningEntityCollectionProperty
+    private List<BatchJob> batchJobList;
+}
+
+@PlanningEntity
+public class BatchJob {
+    // 告诉这个变量：去 "reactorRange" 找答案
+    @PlanningVariable(valueRangeProviderRefs = "reactorRange")
+    private Reactor reactor;
+}
+B. 离散型/数值型范围 (Countable Value Range)
+
+有时答案不是对象，而是一个数字范围（如：优先级 1-10）。
+
+实现：
+
+code
+Java
+download
+content_copy
+expand_less
+@ValueRangeProvider(id = "priorityRange")
+public CountableValueRange<Integer> getPriorityRange() {
+    return ValueRangeFactory.createIntValueRange(1, 11); // 1到10
+}
+3. 特殊但重要的 Range 类型
+① 可为空的范围 (Nullable Planning Variable)
+
+在 CDMO 中，如果任务太多，反应釜排不下，有些任务可能只能“暂不排产”。
+
+用法：@PlanningVariable(..., nullable = true)。
+
+效果：Solver 的备选答案中会自动多出一个 null 值。如果分配为 null，代表该任务被推迟或取消。
+
+② 基于实体的范围 (Entity-specific Value Range) —— 制药行业核心需求
+
+这是网页中提到的高级用法。在 CDMO 中，不是每个任务都能进每个反应釜（比如：酸性反应必须进搪瓷釜，不能进不锈钢釜）。
+
+如果把所有反应釜都扔进全局池子，Solver 会尝试大量无效组合，效率极低。你可以让每个任务拥有自己的池子：
+
+code
+Java
+download
+content_copy
+expand_less
+@PlanningEntity
+public class BatchJob {
+    private List<Reactor> compatibleReactors; // 这个任务只能用的釜
+
+    // 范围不再由 Solution 提供，而是由 Entity 自己提供
+    @ValueRangeProvider(id = "localReactorRange")
+    public List<Reactor> getCompatibleReactors() {
+        return compatibleReactors;
+    }
+
+    @PlanningVariable(valueRangeProviderRefs = "localReactorRange")
+    private Reactor reactor;
+}
+
+好处：Solver 永远不会尝试把一个强酸任务排进不锈钢釜，搜索空间大大缩小，算得极快。
+
+4. 网页中提到的 "Value Range Providers" 注解位置
+
+网页特别强调了注解可以放在两个地方：
+
+放在 @PlanningSolution 上（全局）：
+
+最通用。所有实体的变量都共用这一组答案（如：全工厂的工人）。
+
+放在 @PlanningEntity 上（局部）：
+
+用于处理刚才提到的“兼容性”问题。
+
+5. 关键点总结：如何设计你的 Value Range？
+
+在解决 CDMO 排产时，请记住以下准则：
+
+范围越小越好：如果通过业务逻辑能确定某个任务绝对不能进某些釜，就不要把那些釜放进该任务的 Value Range。
+
+离散化时间：如果你在排时间，不要给 Solver 一个无限细粒度的毫秒级范围。通常建议将时间“离散化”，比如以 15 分钟或 1 小时为一个颗粒（Grain），这样能指数级降低计算量。
+
+List Variable 结合：如果你使用了上一节讲的 Planning List Variable，那么 Value Range Provider 提供的就是 List 中允许存放的所有元素（即所有的 BatchJob）。
+
+一句话总结：Planning Value 是“答案”，Planning Value Range 是“答题范围”。好的建模应该通过缩小“答题范围”来让 Solver 更快地找到“满分答案”。
+
+
+在 Timefold 的建模指南中，“Inheritance for Planning Solutions”（规划方案的继承） 探讨的是如何利用 Java 的继承机制（extends）来构建灵活、可复用的排程系统。
+
+在 CDMO 这种业务复杂的场景下，这一特性非常有用，因为它允许你定义一个通用的基础模型，然后为不同的车间或业务场景定制具体的实现。
+
+1. 核心概念：为什么要继承 Solution？
+
+在一个大型制药平台中，你可能面临以下情况：
+
+合成车间（Synthesis）：关注反应釜、温度、PH值。
+
+制剂/包装车间（Packaging）：关注流水线速度、纸箱库存。
+
+共同点：它们都需要定义“员工”、“排班表名称”、“总分（Score）”、“任务列表”。
+
+如果没有继承，你得在每个车间类里重复写相同的代码。有了继承，你可以把公有逻辑抽离出来。
+
+2. CDMO 实战建模示例
+
+我们可以构建一个三层结构：
+
+第一层：抽象基类 (Abstract Base Class)
+
+这里存放所有排程场景都通用的属性。
+
+code
+Java
+download
+content_copy
+expand_less
+public abstract class AbstractCdmoSchedule {
+    protected String scheduleId;
+
+    // 所有的排程都需要保存分数
+    @PlanningScore
+    protected HardSoftScore score;
+
+    // 所有的排程都需要基础员工信息
+    protected List<Employee> employeeList;
+
+    // 获取所有的任务（具体任务类型由子类决定）
+    @PlanningEntityCollectionProperty
+    public abstract List<? extends BaseTask> getTaskList();
+
+    // ... getters/setters
+}
+第二层：具体业务实现 (Concrete Subclasses)
+
+你可以为不同的厂区或生产模式定义具体的类。
+
+code
+Java
+download
+content_copy
+expand_less
+@PlanningSolution
+public class SynthesisSchedule extends AbstractCdmoSchedule {
+    
+    // 合成车间特有的：反应釜事实
+    @ValueRangeProvider(id = "reactorRange")
+    private List<Reactor> reactorList;
+
+    // 合成车间特有的任务类型
+    private List<SynthesisTask> synthesisTaskList;
+
+    @Override
+    public List<SynthesisTask> getTaskList() {
+        return synthesisTaskList;
+    }
+}
+
+@PlanningSolution
+public class PackagingSchedule extends AbstractCdmoSchedule {
+    
+    // 包装车间特有的：包装线事实
+    @ValueRangeProvider(id = "lineRange")
+    private List<PackagingLine> lineList;
+
+    private List<PackagingTask> packagingTaskList;
+
+    @Override
+    public List<PackagingTask> getTaskList() {
+        return packagingTaskList;
+    }
+}
+3. 文档中提到的关键细节
+A. 注解的继承性
+
+Timefold 会自动扫描整个类继承体系。即使你在基类里标注了 @PlanningScore 或 @PlanningEntityCollectionProperty，子类依然会继承这些元数据。这意味着：
+
+你可以在基类里统一处理分数的存储逻辑。
+
+你可以在基类里统一管理 Solver 运行时的状态。
+
+B. 多态约束（Polymorphic Constraints）
+
+这是最强大的地方。如果你写了一个针对 AbstractCdmoSchedule 的约束（例如：每个员工每天工作不能超过 8 小时），它会自动应用到所有的子类（合成、包装）中。
+
+你只需要写一次约束，所有遵循基类结构的业务模块都能受益。
+
+C. Constraint Configuration 的集成
+
+在 CDMO 中，不同车间的硬/软约束权重可能不同。你可以利用继承，在基类中定义基础约束权重，在子类中覆盖这些权重（利用 @ConstraintConfigurationProvider）。
+
+4. 什么时候该用继承？
+
+在 CDMO 系统开发中，如果你遇到以下情况，建议使用继承：
+
+多租户/多工厂支持：A 工厂和 B 工厂的排程逻辑 80% 相同，但 20% 的设备属性不同。
+
+长期 vs 短期排产：
+
+短期：精确到分钟，考虑反应釜。
+
+长期（产能预估）：精确到天，只考虑总工时。
+
+这两者可以继承自同一个 BaseCapacitySchedule。
+
+代码整洁度：如果你发现你的 @PlanningSolution 类变得巨大（几千行），通过继承可以将基础架构代码（ID、Score、日志）与业务数据解耦。
+
+5. 避坑指南
+
+实体类型兼容性：如果基类返回 List<? extends BaseTask>，确保你的约束逻辑（Constraint Provider）能够正确处理这些基类类型，或者通过 instanceof 分发逻辑。
+
+Solver 配置：在 solverConfig.xml 中，你通常需要指定具体的 solutionClass。继承允许你通过配置文件的不同，复用大部分后端代码来跑不同的求解任务。
+
+总结一句话：Inheritance（继承）让你的 CDMO 排程引擎从“针对一个反应釜的小程序”变成“覆盖全厂所有生产环节的通用平台架构”。
