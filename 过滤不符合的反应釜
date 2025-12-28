@@ -1,0 +1,97 @@
+在 Timefold 中，过滤掉不符合工艺要求的反应釜（设备兼容性过滤）有三种做法。最推荐的做法是第一种（从源头过滤），因为它能极大地缩小搜索空间，让求解效率提升 10 倍以上。
+
+以下是三种方案的详细说明及适用场景：
+
+方案一：实体特有值范围（Entity-specific Value Range）—— 最优选
+
+这是性能最好的方法。在任务（Batch）被创建时，你就根据工艺要求计算好它“可选”的反应釜清单。Solver 在尝试分配时，压根就不会去试那些不符合要求的釜。
+
+在哪里做？：在 PlanningEntity（Batch 类）中定义。
+
+逻辑实现：
+
+在 Batch 类里加一个 getPossibleReactors() 方法。
+
+在该方法里根据工艺（如：酸性反应、体积要求）过滤出合适的反应釜。
+
+变量注解指向这个方法。
+
+代码示例：
+
+code
+Java
+download
+content_copy
+expand_less
+@PlanningEntity
+public class BatchJob {
+    private String processType; // 工艺要求：比如 "ACID" (酸性)
+    private int requiredVolume; // 需求容积
+    
+    // 预先计算好的兼容列表（可以在初始化数据时填好）
+    private List<Reactor> compatibleReactors;
+
+    @ValueRangeProvider(id = "localReactorRange")
+    public List<Reactor> getCompatibleReactors() {
+        return compatibleReactors; 
+    }
+
+    @PlanningVariable(valueRangeProviderRefs = "localReactorRange")
+    private Reactor reactor; // Solver 只会从上面的 list 里选
+}
+
+优点：Solver 永远不会尝试无效组合，搜索效率极高。
+
+适用场景：过滤逻辑是静态的（即：只要任务和设备的属性定了，合不合法就定了）。
+
+方案二：硬约束（Hard Constraints） —— 最通用
+
+如果不希望在模型里写死范围，也可以让 Solver 去“撞墙”。当它把一个任务分给不合适的釜时，立刻扣除大量的 Hard Score。
+
+在哪里做？：在 ConstraintProvider 类中实现。
+
+逻辑实现：
+
+code
+Java
+download
+content_copy
+expand_less
+Constraint reactorCompatibility(ConstraintFactory factory) {
+    return factory.forEach(BatchJob.class)
+            .filter(batch -> !batch.getReactor().canHandle(batch.getProcessType()))
+            .penalize(HardSoftScore.ONE_HARD)
+            .asConstraint("设备工艺不兼容");
+}
+
+优点：逻辑编写最简单，支持动态判断（比如：兼容性如果取决于上一个批次残留的物质）。
+
+缺点：性能稍慢，因为 Solver 会花时间去尝试这些错误的方案，然后被“弹回来”。
+
+方案三：移动过滤器（Selection Filter） —— 高级调优
+
+在某些极端复杂的场景下，你可能需要根据复杂的算法来决定一个 Move（移动）是否合法。
+
+在哪里做？：自定义一个类实现 SelectionFilter 接口，并在 Solver 配置中引用。
+
+逻辑实现：在 Move 发生之前进行拦截。
+
+总结建议：针对你的厂区排产
+
+对于 “过滤不符合工艺要求的反应釜” 这个具体需求：
+
+首选方案一：
+
+在加载数据到内存后，还没开始 solve() 之前，遍历所有 Batch。
+
+对每个 Batch，根据它的 requiredVolume 和 material 要求，把厂里所有 Reactor 过滤一遍，存入该 Batch 的 compatibleReactors 列表。
+
+这样做，Solver 的压力最小，算得最快。
+
+配合方案二（作为双重保障）：
+
+即便用了方案一，建议在 ConstraintProvider 里也写一个简单的硬约束。这能防止以后有人改动了代码逻辑，导致错误的排产结果被视为有效。
+
+一句话原则：
+如果一个反应釜绝对不可能做这个批次，用方案一（Value Range）；
+如果一个反应釜可以做但做起来不太好，用方案二（Soft Constraint）。
