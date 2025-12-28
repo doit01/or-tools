@@ -1,0 +1,67 @@
+这份网页是 Timefold 的建模核心指南。它告诉开发者如何将现实世界的复杂问题（比如你的 CDMO 反应釜排产）翻译成求解器（Solver）能理解的 Java 对象模型。
+
+我将网页内容拆解为四个核心部分，并结合你的**反应釜（Reactor）和批次（Batch）**场景进行详细解释：
+
+一、 三大核心角色：谁在变？谁没变？
+
+网页首先定义了建模中的三种基本身份。在 Timefold 中，你的 Java 类必须明确属于其中之一：
+
+1. Planning Fact (问题事实 - 固定不变)
+
+这些是排程过程中不会被改变的数据。
+
+CDMO 场景：Reactor（反应釜类）。
+
+属性：反应釜的 ID、最大容量、材质（不锈钢/玻璃）、位置。
+
+特点：求解器只读取这些信息，不会去修改一个反应釜的容积。
+
+2. Planning Entity (规划实体 - 待办事项)
+
+这些是需要被安排、被移动的对象。
+
+CDMO 场景：BatchJob（生产批次/任务类）。
+
+特点：类上必须标注 @PlanningEntity。它代表了你需要优化的“那行数据”。
+
+3. Planning Variable (规划变量 - 填空题的空格)
+
+这是实体上还没确定的属性，是求解器要帮你填写的“答案”。
+
+CDMO 场景：batch.setReactor(selectedReactor)。
+
+注解：@PlanningVariable。
+
+意义：求解器的工作就是不断尝试往这个变量里填入不同的“反应釜”，直到找到最省时间或成本的那个。
+
+二、 Planning Solution：全局方案容器
+
+网页详细解释了如何构建一个总容器类（通常叫 ProductionSchedule）。
+
+它的组成部分：
+
+事实列表：所有的反应釜清单 List<Reactor>。
+
+实体列表：所有需要排产的批次清单 List<BatchJob>（标注 @PlanningEntityCollectionProperty）。
+
+分数值：标注 @PlanningScore，用来记录这个方案是好是坏。
+
+Value Range Provider (备选范围提供者)：
+
+这是最关键的配置。你必须告诉变量：“你可以从哪个列表里选答案”。
+
+例子：@ValueRangeProvider(id = "reactorRange") 标注在反应釜列表上。
+
+三、 两种强大的变量建模模式（针对复杂场景）
+
+这是该文档中针对 CDMO 这种“有先后顺序”的业务最精华的部分：
+
+1. Planning List Variable (列表变量模式) —— 强烈推荐
+
+网页重点介绍了这种新模式。
+
+建模方式：不再是每个批次选反应釜，而是每个反应釜持有一个批次的列表：List<BatchJob> batchList。
+
+为什么适合你？：在反应釜排产中，顺序（Sequence） 至关重要（因为涉及清洗成本）。List Variable 天生就包含了顺序信息：列表里的第一个就是先做的，第二个就是后做的。
+
+2. Shadow Vari
