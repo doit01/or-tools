@@ -1,0 +1,116 @@
+这份文档是 Timefold 的核心灵魂。如果说之前的“建模”是定义了工厂里的骨架，那么分数与约束（Score & Constraints） 就是定义了**“什么是好排班”的判别标准**。
+
+没有分数的 Solver 就像一个没有裁判的球员，他不知道该往哪里跑。以下是该网页内容的深度详解，结合了你的 CDMO 业务背景：
+
+1. 分数的层级：硬、中、软 (Hard, Medium, Soft)
+
+这是 Timefold 最基础的设计哲学。它将业务规则分成了不同的“重量级”：
+
+A. Hard Constraints (硬约束) —— 不可逾越的底线
+
+定义：如果违反了，这个排班表就是“废纸”，根本无法在工厂实施。
+
+CDMO 例子：
+
+设备互斥：一个反应釜在同一时间只能做一个批次。
+
+材质兼容：强腐蚀性反应必须在玻璃内衬釜进行，绝不能进不锈钢釜。
+
+产能限制：批次量不能超过反应釜的最大容积。
+
+目标：Solver 的首要任务是将硬约束扣分降为 0。
+
+B. Medium Constraints (中级约束) —— 通常用于“资源平衡”
+
+定义：可选层级，通常用来平衡多个硬指标之间的冲突，或者处理“未分配”的任务。
+
+CDMO 例子：
+
+订单丢单惩罚：如果一个订单完全排不进去，扣除中级分数。这能保证 Solver 尽量把所有任务都塞进去。
+
+C. Soft Constraints (软约束) —— 追求卓越的利润
+
+定义：可以违反，但违反得越少，效率越高、成本越低。
+
+CDMO 例子：
+
+减少清洗时间：如果 A 药后接 B 药需要洗 4 小时，而 A 药后接 C 药只需 1 小时，那么“A后接C”的软分数更高。
+
+交货期偏好：尽量在 Deadline 前 2 天完成，每提前/延迟一天对应不同的分值。
+
+2. 分数的形式 (Score Type)
+
+网页介绍了分数的表现形式，最常用的是 HardSoftScore 或 HardMediumSoftScore。
+
+表现形式：0hard / -500soft
+
+绝对优先级：1 个硬约束扣分的权重永远大于 10 亿个软约束扣分。 无论软分数优化得多么完美，只要硬分数是负数（如 -1hard），这个方案就是不可用的。
+
+3. 分数计算的两种“哲学”
+A. 正向得分 vs 负向得分 (Positive vs Negative Scoring)
+
+Timefold 推荐负向得分：即从 0 分开始，每违反一条规则就扣分（惩罚）。
+
+原因：在排产中，约束（“不要这样做”）比目标（“我们要这样做”）更容易定义。
+
+B. 权重与权重缩放 (Weighting)
+
+并非所有软约束都一样重要。
+
+例子：节省 1 小时清洗时间（扣 10 分） vs 延迟 1 天交货（扣 100 分）。
+
+你可以通过权重 (Weights) 来微调 Solver 的偏好。
+
+4. 增量分数计算 (Incremental Score Calculation) —— 性能黑科技
+
+这是该网页技术含量最高的部分，解释了为什么 Timefold 算得快：
+
+传统方式：每次移动一个任务，都重新计算整个工厂几千个任务的总分。这太慢了。
+
+增量计算：如果 Solver 只是把“批次 A”从“釜 1”换到了“釜 2”，Timefold 只计算受影响的这两个釜的分数变化，其他几百个釜的分数直接复用旧值。
+
+结果：计算速度提升几百倍。
+
+5. 如何写约束：Constraint Streams API
+
+这是目前 Timefold 最推荐的写法（类似于 Java 的 Stream API）。
+
+针对 CDMO 反应釜重叠的约束代码逻辑：
+
+code
+Java
+download
+content_copy
+expand_less
+Constraint reactorConflict(ConstraintFactory factory) {
+    return factory.forEachUniquePair(BatchJob.class,
+            Joiners.equal(BatchJob::getReactor), // 相同的反应釜
+            Joiners.overlapping(BatchJob::getStartTime, BatchJob::getEndTime)) // 时间重叠
+            .penalize(HardSoftScore.ONE_HARD) // 扣 1 个硬分
+            .asConstraint("反应釜冲突");
+}
+6. 针对 CDMO 场景的总结建议
+
+根据这份文档的内容，在为你的厂排产时，你应该这样设计你的分数体系：
+
+Hard (硬)：
+
+反应釜容积够不够？
+
+反应釜材质对不对？
+
+时间有没有重叠？
+
+Medium (中)：
+
+是否有重要客户的订单被排到了“未分配”池？
+
+Soft (软)：
+
+清洗成本最小化（最核心的盈利点）。
+
+能源平衡（比如不要让所有高耗能设备同时启动）。
+
+人员排班（尽量让同一个班组负责同一产线的连续生产）。
+
+总结一句话：这一页文档教你如何用数字来定义“什么是好排班”，并利用 Timefold 的增量计算引擎，在几秒钟内从数万个方案中精准定位那个扣分最少的方案。
